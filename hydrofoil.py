@@ -9,6 +9,14 @@ scene = "./scene.blend"
 bproc.init()
 bproc.loader.load_blend(scene)
 
+# Get hdris in folder
+hdri_folder = "./hdris"
+hdri_files = [f for f in os.listdir(hdri_folder) if f.endswith('.exr')]
+if not hdri_files:
+    raise FileNotFoundError(f"No .exr files found in {hdri_folder}")
+else:
+    print(f"Found HDRI files: {hdri_files}")
+        
 # 1. Sync Intrinsics
 bproc.camera.set_intrinsics_from_blender_params(
     lens=17.5,
@@ -31,41 +39,46 @@ camera.rotation_euler = (math.radians(56.2051), 0, 0)
 # 4. Generate Poses and Keyframes
 start_z = cylinder.location.z
 end_z = -3.88736
-num_samples = 2
-z_values = np.linspace(start_z, end_z, num_samples)
+num_ride_heights = 2
+z_values = np.linspace(start_z, end_z, num_ride_heights)
 
-if cylinder.animation_data:
-    cylinder.animation_data_clear()
+# Track metadata for HDF5
+used_ride_heights = []
+used_hdri_names = []
 
-for i, z in enumerate(z_values):
+frame_counter = 0
+
+for z in z_values:
+    # Set the physical position of the object
     cylinder.location.z = z
-    cylinder.keyframe_insert(data_path="location", index=2, frame=i)
     bpy.context.view_layer.update()
     
+    # Get the camera matrix once for this height
     cam_world_matrix = camera.matrix_world.copy()
-    bproc.camera.add_camera_pose(cam_world_matrix)
-    print(f"Frame {i}: Ride Height (Z) = {z:.4f}")
+
+    for hdri_file in hdri_files:
+        # 1. Load the specific HDRI for this frame
+        hdri_path = os.path.join(hdri_folder, hdri_file)
+        bproc.world.set_world_background_hdr_img(hdri_path)
+        
+        # 2. Register the camera pose for this specific HDRI/Height combo
+        bproc.camera.add_camera_pose(cam_world_matrix)
+        
+        # 3. Store metadata
+        used_ride_heights.append(z)
+        used_hdri_names.append(hdri_file)
+        
+        print(f"Frame {frame_counter}: Z={z:.4f}, HDRI={hdri_file}")
+        frame_counter += 1
 
 # 5. Render
-bpy.context.scene.render.engine = 'BLENDER_EEVEE_NEXT'
+# Note: BlenderProc will now render (num_ride_heights * num_hdris) frames
 data = bproc.renderer.render()
 
 # 6. ADD CUSTOM DATA TO HDF5
-# We add the ride height array to the data dictionary. 
-# bproc.writer.write_hdf5 will automatically save this as a dataset in the .h5 file.
-data["ride_height"] = [np.array([z]) for z in z_values]
+data["ride_height"] = [np.array([z]) for z in used_ride_heights]
+data["hdri_source"] = [name for name in used_hdri_names]
 
 # 7. Output
 output_dir = "./output"
-if not os.path.exists(output_dir):
-    os.makedirs(output_dir)
-
-# Now this will work without the Exception
 bproc.writer.write_hdf5(output_dir, data)
-
-# Visual check: Save PNGs
-for i, image in enumerate(data['colors']):
-    img_bgr = cv2.cvtColor(image.astype(np.uint8), cv2.COLOR_RGB2BGR)
-    cv2.imwrite(os.path.join(output_dir, f"frame_{i}.png"), img_bgr)
-
-print(f"Success! 'ride_height' has been saved into the HDF5 file in {output_dir}")
