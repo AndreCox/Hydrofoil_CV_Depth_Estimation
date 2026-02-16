@@ -16,6 +16,9 @@ if not hdri_files:
     raise FileNotFoundError(f"No .exr files found in {hdri_folder}")
 else:
     print(f"Found HDRI files: {hdri_files}")
+
+# Specify EEVEE Renderer
+bpy.context.scene.render.engine = 'BLENDER_EEVEE_NEXT'
         
 # 1. Sync Intrinsics
 bproc.camera.set_intrinsics_from_blender_params(
@@ -48,37 +51,39 @@ used_hdri_names = []
 
 frame_counter = 0
 
+output_dir = "./output"
+os.makedirs(output_dir, exist_ok=True)
+# remove the files in output
+for f in os.listdir(output_dir):
+    file_path = os.path.join(output_dir, f)
+    if os.path.isfile(file_path):
+        os.remove(file_path)
+
 for z in z_values:
-    # Set the physical position of the object
     cylinder.location.z = z
     bpy.context.view_layer.update()
-    
-    # Get the camera matrix once for this height
     cam_world_matrix = camera.matrix_world.copy()
 
     for hdri_file in hdri_files:
-        # 1. Load the specific HDRI for this frame
+        # 1. Clear previous keyframes/poses so we only render ONE frame
+        bproc.utility.reset_keyframes()
+        
+        # 2. Set HDRI
         hdri_path = os.path.join(hdri_folder, hdri_file)
         bproc.world.set_world_background_hdr_img(hdri_path)
         
-        # 2. Register the camera pose for this specific HDRI/Height combo
+        # 3. Add the single pose for this specific frame
         bproc.camera.add_camera_pose(cam_world_matrix)
         
-        # 3. Store metadata
-        used_ride_heights.append(z)
-        used_hdri_names.append(hdri_file)
+        print(f"Rendering Frame {frame_counter}: Z={z:.4f}, HDRI={hdri_file}")
         
-        print(f"Frame {frame_counter}: Z={z:.4f}, HDRI={hdri_file}")
+        # 4. Render and write
+        data = bproc.renderer.render()
+        data["ride_height"] = np.array([[z]], dtype=np.float32) 
+        data["hdri_source"] = np.array([[hdri_file]], dtype=object)
+        
+        # Use a unique prefix or frame index so they don't overwrite
+        bproc.writer.write_hdf5(output_dir, data, append_to_existing_output=True)
+        
         frame_counter += 1
 
-# 5. Render
-# Note: BlenderProc will now render (num_ride_heights * num_hdris) frames
-data = bproc.renderer.render()
-
-# 6. ADD CUSTOM DATA TO HDF5
-data["ride_height"] = [np.array([z]) for z in used_ride_heights]
-data["hdri_source"] = [name for name in used_hdri_names]
-
-# 7. Output
-output_dir = "./output"
-bproc.writer.write_hdf5(output_dir, data)
