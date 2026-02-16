@@ -18,7 +18,10 @@ else:
     print(f"Found HDRI files: {hdri_files}")
 
 # Specify EEVEE Renderer
-bpy.context.scene.render.engine = 'BLENDER_EEVEE_NEXT'
+bpy.context.scene.render.engine = 'CYCLES'
+# set denoising on and lower the samples
+bpy.context.scene.cycles.use_denoising = True
+bpy.context.scene.cycles.samples = 64
         
 # 1. Sync Intrinsics
 bproc.camera.set_intrinsics_from_blender_params(
@@ -42,7 +45,7 @@ camera.rotation_euler = (math.radians(56.2051), 0, 0)
 # 4. Generate Poses and Keyframes
 start_z = cylinder.location.z
 end_z = -3.88736
-num_ride_heights = 2
+num_ride_heights = 15
 z_values = np.linspace(start_z, end_z, num_ride_heights)
 
 # Track metadata for HDF5
