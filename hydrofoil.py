@@ -198,6 +198,30 @@ for z, z_normalized in zip(z_values, z_values_normalized):
         # 4. Scrub 0 → TOTAL_FRAMES — Dynamic Paint accumulates full trail
         dg = evaluate_scene(frame=RENDER_FRAME)
 
+        # --- 4.5 FREEZE EVALUATED MESH FOR RENDER ---
+        frozen_state = {}
+        for canvas in canvas_objects:
+            # 1. Get the evaluated object
+            eval_canvas = canvas.evaluated_get(dg)
+            dg.update()
+            # 2. Create a brand NEW original mesh from the evaluated object
+            # This safely detaches it from the depsgraph's evaluated state
+            static_mesh = bpy.data.meshes.new_from_object(
+                eval_canvas, 
+                preserve_all_data_layers=True, 
+                depsgraph=dg
+            )
+
+            # 3. Save the original base mesh to restore later
+            frozen_state[canvas] = canvas.data
+
+            # 4. Swap the object's mesh to the frozen simulation
+            canvas.data = static_mesh
+
+            # 5. Disable modifiers for render so they don't double-evaluate
+            for mod in canvas.modifiers:
+                mod.show_render = False
+
         # 5. Sanity check
         t = cylinder.matrix_world.translation
         print(f"  Cylinder pos: x={t.x:.2f} y={t.y:.2f} z={t.z:.2f}  (x should be ~{origin_x:.2f})")
@@ -225,6 +249,17 @@ for z, z_normalized in zip(z_values, z_values_normalized):
 
         # 11. Render
         data = bproc.renderer.render()
+
+        # --- 11.5 RESTORE ORIGINAL MESH AND MODIFIERS ---
+        for canvas, orig_mesh in frozen_state.items():
+            temp_mesh = canvas.data
+            canvas.data = orig_mesh
+            
+            for mod in canvas.modifiers:
+                mod.show_render = True
+                
+            # Free memory
+            bpy.data.meshes.remove(temp_mesh)
 
         # 12. Write HDF5
         colors = data["colors"][0]
