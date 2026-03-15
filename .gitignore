@@ -2,3 +2,4 @@ output/
 examples/
 *.blend1
 blendcache_scene/
+hydrofoil_webp.hdf5

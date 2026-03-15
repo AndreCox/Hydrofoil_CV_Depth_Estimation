@@ -4,6 +4,26 @@ import bpy
 import math
 import os
 import h5py
+from tqdm import tqdm
+import sys
+from contextlib import contextmanager
+
+@contextmanager
+def stdout_redirected(to=os.devnull):
+    """Redirects stdout to devnull to silence Blender's internal logging."""
+    fd = sys.stdout.fileno()
+    def _redirect_stdout(to_):
+        sys.stdout.close()
+        os.dup2(to_.fileno(), fd)
+        sys.stdout = os.fdopen(fd, 'w')
+
+    with os.fdopen(os.dup(fd), 'w') as old_stdout:
+        with open(to, 'w') as file:
+            _redirect_stdout(to_=file)
+        try:
+            yield
+        finally:
+            _redirect_stdout(to_=old_stdout)
 
 scene = "./scene.blend"
 bproc.init()
@@ -18,10 +38,10 @@ if not hdri_files:
 # --- 1. RENDER CONFIGURATION ---
 bpy.context.scene.render.engine = 'CYCLES'
 bpy.context.scene.cycles.use_denoising = True
-bpy.context.scene.cycles.samples = 128
+bpy.context.scene.cycles.samples = 64
 
 bpy.context.scene.render.use_motion_blur = True
-bpy.context.scene.render.motion_blur_shutter = 0.5
+bpy.context.scene.render.motion_blur_shutter = 1 # longer shutter means more blur, shorter means less
 
 bpy.context.scene.render.use_simplify = False
 
@@ -47,7 +67,7 @@ camera.rotation_euler = (math.radians(56.2051), 0, 0)
 # --- 5. RIDE HEIGHT POSES ---
 start_z = cylinder.location.z
 end_z   = -3.88736
-num_ride_heights    = 15
+num_ride_heights    = 200
 z_values            = np.linspace(start_z, end_z, num_ride_heights)
 z_values_normalized = (z_values - start_z) / (end_z - start_z)
 
@@ -73,7 +93,7 @@ for f in os.listdir(output_dir):
 # ---------------------------------------------------------------------------
 TOTAL_FRAMES    = 50
 RENDER_FRAME    = TOTAL_FRAMES  # never change independently
-TRAVEL_DISTANCE = 50.0          # units in X
+TRAVEL_DISTANCE = 100.0          # units in X
 
 # ---------------------------------------------------------------------------
 # HELPERS
@@ -161,7 +181,7 @@ def write_frame_hdf5(output_dir, frame_idx, colors, z_normalized, hdri_file, vel
         hf.create_dataset("ride_height", data=np.float32(z_normalized))
         hf.create_dataset("hdri_source", data=hdri_file)
         hf.create_dataset("velocity",    data=np.float32(velocity))
-    print(f"  → Saved {out_path}")
+    tqdm.write(f"  -> Saved {out_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +193,13 @@ origin_x = cylinder.location.x
 
 # Find canvas objects once upfront
 canvas_objects = find_canvas_objects()
-print(f"Found {len(canvas_objects)} Dynamic Paint canvas object(s): {[o.name for o in canvas_objects]}")
+tqdm.write(f"Found {len(canvas_objects)} Dynamic Paint canvas object(s): {[o.name for o in canvas_objects]}")
+
+# --- Calculate Total Iterations for tqdm ---
+total_renders = len(z_values) * len(hdri_files)
+
+# Wrap the outer loop with tqdm
+pbar = tqdm(total=total_renders, desc="Rendering Frames", unit="frame", dynamic_ncols=True)
 
 for z, z_normalized in zip(z_values, z_values_normalized):
 
@@ -181,7 +207,29 @@ for z, z_normalized in zip(z_values, z_values_normalized):
 
     for hdri_file in hdri_files:
 
-        print(f"\n[Render {frame_counter:04d}] z_norm={z_normalized:.4f} | hdri={hdri_file}")
+        tqdm.write(f"\n[Render {frame_counter:04d}] z_norm={z_normalized:.4f} | hdri={hdri_file}")
+
+        # 0. randomize seed for any stochastic processes (e.g. noise texture in shader)
+        random_seed = np.random.randint(0, 1_000_000)
+        for mat in bpy.data.materials:
+            if mat.node_tree:
+                for node in mat.node_tree.nodes:
+                    if node.type == 'TEX_NOISE':
+                        node.inputs['Seed'].default_value = random_seed
+
+        # also randomize seed for any Geometry Nodes that use it (e.g. for foam distribution)
+        for obj in bpy.data.objects:
+            for mod in obj.modifiers:
+                if mod.type == 'NODES' and mod.node_group:
+                    for node in mod.node_group.nodes:
+                        if node.type == 'ShaderNodeValue' and "seed" in node.name.lower():
+                            node.outputs[0].default_value = random_seed
+
+        # also randomize seed for ocean modifier if present
+        for obj in bpy.data.objects:
+            for mod in obj.modifiers:
+                if mod.type == 'OCEAN':
+                    mod.random_seed = random_seed
 
         # 1. Reset cylinder to start position
         cylinder.location.x = origin_x
@@ -190,7 +238,7 @@ for z, z_normalized in zip(z_values, z_values_normalized):
         # 2. Reset Dynamic Paint canvas so previous trail doesn't bleed through
         for canvas_obj in canvas_objects:
             reset_dynamic_paint(canvas_obj)
-            print(f"  Reset Dynamic Paint on: {canvas_obj.name}")
+            tqdm.write(f"  Reset Dynamic Paint on: {canvas_obj.name}")
 
         # 3. Keyframe x: (origin_x - 50) → origin_x over 50 frames
         set_motion_keyframes(cylinder, TOTAL_FRAMES, TRAVEL_DISTANCE, origin_x)
@@ -224,7 +272,7 @@ for z, z_normalized in zip(z_values, z_values_normalized):
 
         # 5. Sanity check
         t = cylinder.matrix_world.translation
-        print(f"  Cylinder pos: x={t.x:.2f} y={t.y:.2f} z={t.z:.2f}  (x should be ~{origin_x:.2f})")
+        tqdm.write(f"  Cylinder pos: x={t.x:.2f} y={t.y:.2f} z={t.z:.2f}  (x should be ~{origin_x:.2f})")
 
         # 6. Camera matrix after full evaluation
         cam_world_matrix = camera.matrix_world.copy()
@@ -232,7 +280,7 @@ for z, z_normalized in zip(z_values, z_values_normalized):
         # 7. Confirm Geometry Nodes are live
         evaluated_obj = cylinder.evaluated_get(dg)
         mesh = evaluated_obj.to_mesh()
-        print(f"  Evaluated verts: {len(mesh.vertices)}")
+        tqdm.write(f"  Evaluated verts: {len(mesh.vertices)}")
         evaluated_obj.to_mesh_clear()
 
         # 8. Pin Cycles to RENDER_FRAME
@@ -242,13 +290,15 @@ for z, z_normalized in zip(z_values, z_values_normalized):
 
         # 9. Set HDRI
         hdri_path = os.path.join(hdri_folder, hdri_file)
-        bproc.world.set_world_background_hdr_img(hdri_path)
+        with stdout_redirected():
+            bproc.world.set_world_background_hdr_img(hdri_path)
 
         # 10. Register camera pose
         bproc.camera.add_camera_pose(cam_world_matrix)
 
         # 11. Render
-        data = bproc.renderer.render()
+        with stdout_redirected():
+            data = bproc.renderer.render()
 
         # --- 11.5 RESTORE ORIGINAL MESH AND MODIFIERS ---
         for canvas, orig_mesh in frozen_state.items():
@@ -262,7 +312,8 @@ for z, z_normalized in zip(z_values, z_values_normalized):
             bpy.data.meshes.remove(temp_mesh)
 
         # 12. Write HDF5
-        colors = data["colors"][0]
+        with stdout_redirected():
+            colors = data["colors"][0]
         write_frame_hdf5(
             output_dir   = output_dir,
             frame_idx    = frame_counter,
@@ -273,3 +324,9 @@ for z, z_normalized in zip(z_values, z_values_normalized):
         )
 
         frame_counter += 1
+        pbar.update(1)
+        pbar.set_postfix({
+            "z_norm": f"{z_normalized:.4f}",
+            "hdri": hdri_file,
+        })
+pbar.close()
