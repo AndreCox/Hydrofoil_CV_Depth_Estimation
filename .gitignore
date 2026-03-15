@@ -3,3 +3,8 @@ examples/
 *.blend1
 blendcache_scene/
 hydrofoil_webp.hdf5
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
