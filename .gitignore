@@ -8,3 +8,7 @@ __pycache__/
 *.pyo
 *.pyd
 *.so
+output_train/
+output_test/
+output_val/
+output_novel/

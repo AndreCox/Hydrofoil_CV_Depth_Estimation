@@ -66,8 +66,8 @@ camera.rotation_euler = (math.radians(56.2051), 0, 0)
 
 # --- 5. RIDE HEIGHT POSES ---
 start_z = cylinder.location.z
-end_z   = -3.88736
-num_ride_heights    = 200
+end_z   = -3.1
+num_ride_heights    = 50
 z_values            = np.linspace(start_z, end_z, num_ride_heights)
 z_values_normalized = (z_values - start_z) / (end_z - start_z)
 
@@ -100,9 +100,11 @@ TRAVEL_DISTANCE = 100.0          # units in X
 # ---------------------------------------------------------------------------
 
 def clear_location_keyframes(obj):
+    """Remove ALL location fcurves (X, Y, and Z) from the object's action."""
     if obj.animation_data and obj.animation_data.action:
         action = obj.animation_data.action
-        for fc in [fc for fc in action.fcurves if fc.data_path == "location"]:
+        to_remove = [fc for fc in action.fcurves if fc.data_path == "location"]
+        for fc in to_remove:
             action.fcurves.remove(fc)
 
 
@@ -174,12 +176,13 @@ def evaluate_scene(frame: int):
     return bpy.context.evaluated_depsgraph_get()
 
 
-def write_frame_hdf5(output_dir, frame_idx, colors, z_normalized, hdri_file, velocity):
+def write_frame_hdf5(output_dir, frame_idx, colors, z_normalized, hdri_file, hdri_rotation, velocity):
     out_path = os.path.join(output_dir, f"{frame_idx}.hdf5")
     with h5py.File(out_path, "w") as hf:
         hf.create_dataset("colors",      data=colors,               compression="gzip")
         hf.create_dataset("ride_height", data=np.float32(z_normalized))
         hf.create_dataset("hdri_source", data=hdri_file)
+        hf.create_dataset("hdri_rotation", data=np.float32(hdri_rotation))
         hf.create_dataset("velocity",    data=np.float32(velocity))
     tqdm.write(f"  -> Saved {out_path}")
 
@@ -232,6 +235,8 @@ for z, z_normalized in zip(z_values, z_values_normalized):
                     mod.random_seed = random_seed
 
         # 1. Reset cylinder to start position
+        clear_location_keyframes(cylinder)   
+        cylinder.location.z = z
         cylinder.location.x = origin_x
         cylinder.location.y = 0.0
 
@@ -293,6 +298,17 @@ for z, z_normalized in zip(z_values, z_values_normalized):
         with stdout_redirected():
             bproc.world.set_world_background_hdr_img(hdri_path)
 
+
+        # Randomize HDRI Z rotation (0 to 360 degrees)
+        random_hdri_rotation = np.random.uniform(0, 2 * math.pi)
+        world = bpy.context.scene.world
+        if world and world.node_tree:
+            for node in world.node_tree.nodes:
+                if node.type == 'MAPPING':
+                    node.inputs['Rotation'].default_value[2] = random_hdri_rotation
+                    tqdm.write(f"  HDRI rotation: {math.degrees(random_hdri_rotation):.1f}°")
+                    break
+
         # 10. Register camera pose
         bproc.camera.add_camera_pose(cam_world_matrix)
 
@@ -320,6 +336,7 @@ for z, z_normalized in zip(z_values, z_values_normalized):
             colors       = colors,
             z_normalized = z_normalized,
             hdri_file    = hdri_file,
+            hdri_rotation = random_hdri_rotation,
             velocity     = TRAVEL_DISTANCE / TOTAL_FRAMES,
         )
 
