@@ -12,3 +12,4 @@ output_train/
 output_test/
 output_val/
 output_novel/
+hydrofoil_novel_webp.hdf5

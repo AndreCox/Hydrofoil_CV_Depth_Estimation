@@ -7,8 +7,8 @@ from PIL import Image
 from tqdm import tqdm
 
 # --- Configuration ---
-source_folder = './output'
-output_file = 'hydrofoil_webp.hdf5'
+source_folder = './output_novel'
+output_file = 'hydrofoil_novel_webp.hdf5'
 webp_quality = 80  # 80 is standard; 100 is very high quality; <50 is very small
 
 # 1. Gather files and calculate original size programmatically
